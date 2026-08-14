@@ -56,11 +56,17 @@ function App() {
   const [guestAnswer, setGuestAnswer] = useState('')
   const [guestResult, setGuestResult] = useState<GameEvent | null>(null)
   const [hostWrongGuess, setHostWrongGuess] = useState('')
+  const [rematchWaiting, setRematchWaiting] = useState(false)
+  const [guestRematchPending, setGuestRematchPending] = useState(false)
+  const [guestRematchReady, setGuestRematchReady] = useState(false)
+  const [rematchReadyCount, setRematchReadyCount] = useState(0)
+  const [pendingRematchTracks, setPendingRematchTracks] = useState<Track[]>([])
   const channelRef = useRef<RealtimeChannel | null>(null)
   const clientIdRef = useRef(realtime.createClientId())
   const remoteBuzzRef = useRef<(clientId: string) => void>(() => undefined)
   const remoteAnswerRef = useRef<(text: string, clientId: string) => void>(() => undefined)
   const participantMapRef = useRef(new Map<string, number>())
+  const rematchReadyRef = useRef(new Set<string>())
   const buzzLockedRef = useRef(false)
   const capacityRef = useRef(2)
   const [connected, setConnected] = useState(false)
@@ -145,6 +151,10 @@ function App() {
         setGuestConnected(true)
       } else if (event.type === 'buzz') remoteBuzzRef.current(event.clientId)
       else if (event.type === 'answer') remoteAnswerRef.current(event.text, event.clientId)
+      else if (event.type === 'rematch_ready') {
+        rematchReadyRef.current.add(event.clientId)
+        setRematchReadyCount(rematchReadyRef.current.size)
+      }
       return
     }
     if (role === 'guest') {
@@ -157,6 +167,7 @@ function App() {
           return event
         })
         setScreen('guest')
+        if (event.round === 0) { setGuestRematchPending(false); setGuestRematchReady(false) }
         if (event.playing) setGuestBuzzLocked(null)
       }
       else if (event.type === 'playback') {
@@ -171,6 +182,9 @@ function App() {
       else if (event.type === 'buzz_locked') setGuestBuzzLocked({ clientId: event.clientId, player: event.player })
       else if (event.type === 'buzz_granted' && event.clientId === clientIdRef.current) { setGuestGranted(true); setGuestAnswer('') }
       else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) { setGuestBuzzLocked(null); setError('Outro jogador apertou primeiro.') }
+      else if (event.type === 'rematch_requested') {
+        setGuestRematchPending(true); setGuestRematchReady(false); setGuestResult(null); refreshDevices()
+      }
       else if (event.type === 'result') {
         setGuestGranted(false)
         if (event.finished || event.player === guestPlayerIndexRef.current) setGuestResult(event)
@@ -246,6 +260,28 @@ function App() {
       if (selectedDevice !== 'browser' && !available.some(device => device.id === selectedDevice)) setSelectedDevice('browser')
     } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível listar os dispositivos.') }
     finally { setLoadingDevices(false) }
+  }
+
+  async function prepareChosenPlayback(forGuest: boolean) {
+    playerRef.current?.disconnect()
+    let playback: { player: SpotifyPlayer; deviceId: string }
+    if (selectedDevice !== 'browser') {
+      const fallback = await spotify.createDesktopFallback(selectedDevice)
+      playback = fallback
+      setPlaybackNotice(`Áudio sincronizado em: ${fallback.deviceName}`)
+    } else {
+      try {
+        playback = await spotify.createPlayer(setError)
+        setPlaybackNotice('Áudio sincronizado neste navegador')
+      } catch {
+        const fallback = await spotify.createDesktopFallback()
+        playback = fallback
+        setPlaybackNotice(`Player do navegador indisponível · áudio em: ${fallback.deviceName}`)
+      }
+    }
+    playerRef.current = playback.player
+    if (forGuest) guestDeviceIdRef.current = playback.deviceId
+    else setDeviceId(playback.deviceId)
   }
 
   useEffect(() => {
@@ -430,22 +466,52 @@ function App() {
     if (onlineRole === 'host') broadcast({ type: 'game', round: next, total: tracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
   }
 
-  function rematch() {
+  function requestRematch() {
     const previousIds = new Set(tracks.map(track => track.id))
     const unseenTracks = trackPool.filter(track => !previousIds.has(track.id))
     const wanted = Math.min(roundCount, trackPool.length)
     const previouslyPlayed = trackPool.filter(track => previousIds.has(track.id))
     const candidates = [...shuffle(unseenTracks), ...shuffle(previouslyPlayed)]
     const nextTracks = candidates.slice(0, wanted)
-    const resetPlayers = players.map(player => ({ ...player, score: 0 }))
-    roundStartMsRef.current.clear()
-    setTracks(nextTracks); setRound(0); setPlayers(resetPlayers); setScreen('game'); resetRound()
-    if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: nextTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: resetPlayers.map(() => 0), names: resetPlayers.map(player => player.name) })
+    if (onlineRole === 'local') {
+      const resetPlayers = players.map(player => ({ ...player, score: 0 }))
+      roundStartMsRef.current.clear()
+      setTracks(nextTracks); setRound(0); setPlayers(resetPlayers); setScreen('game'); resetRound()
+      return
+    }
+    setPendingRematchTracks(nextTracks)
+    rematchReadyRef.current.clear(); setRematchReadyCount(0); setRematchWaiting(true)
+    if (onlineRole === 'host') broadcast({ type: 'rematch_requested' })
+    refreshDevices()
+  }
+
+  async function confirmGuestRematchReady() {
+    setLoading(true); setError('')
+    try {
+      await prepareChosenPlayback(true)
+      setGuestRematchReady(true)
+      await broadcast({ type: 'rematch_ready', clientId: clientIdRef.current })
+    } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível preparar a saída de áudio.') }
+    finally { setLoading(false) }
+  }
+
+  async function startRematch() {
+    setLoading(true); setError('')
+    try {
+      await prepareChosenPlayback(false)
+      const resetPlayers = players.map(player => ({ ...player, score: 0 }))
+      const nextTracks = pendingRematchTracks
+      roundStartMsRef.current.clear()
+      setTracks(nextTracks); setRound(0); setPlayers(resetPlayers); setScreen('game'); setRematchWaiting(false); resetRound()
+      if (onlineRole === 'host') await broadcast({ type: 'game', round: 0, total: nextTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: resetPlayers.map(() => 0), names: resetPlayers.map(player => player.name) })
+    } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível iniciar a revanche.') }
+    finally { setLoading(false) }
   }
 
   const bestScore = Math.max(...players.map(player => player.score))
   const leaders = players.map((player, index) => ({ ...player, index })).filter(player => player.score === bestScore)
   const winner = leaders.length === 1 ? leaders[0].index : null
+  const rematchDeviceOptions = <div className="device-options"><button type="button" className={selectedDevice === 'browser' ? 'selected' : ''} onClick={() => setSelectedDevice('browser')}><Monitor/><span><b>Este navegador</b><small>Reproduzir neste aparelho</small></span>{selectedDevice === 'browser' && <Check/>}</button>{devices.map(device => <button type="button" key={device.id} className={selectedDevice === device.id ? 'selected' : ''} onClick={() => setSelectedDevice(device.id!)}>{device.type.toLowerCase() === 'computer' ? <Monitor/> : <Speaker/>}<span><b>{device.name}</b><small>{device.type}{device.is_active ? ' · ativo agora' : ''}</small></span>{selectedDevice === device.id && <Check/>}</button>)}</div>
 
   if (loading) return <main className="center"><div className="loader"/><p>Preparando o palco…</p></main>
 
@@ -470,6 +536,8 @@ function App() {
 
     {screen === 'guest' && guestResult?.type === 'result' && guestResult.kind === 'wrong' && guestResult.player === guestPlayerIndex && <div className="toast notice"><X size={18}/><span>Seu chute: <b>{guestResult.answer}</b></span></div>}
     {screen === 'game' && onlineRole !== 'local' && hostWrongGuess && <div className="toast notice"><X size={18}/><span>Seu chute: <b>{hostWrongGuess}</b></span></div>}
+    {rematchWaiting && onlineRole === 'host' && <div className="rematch-overlay"><section><div className="eyebrow"><span/> REVANCHE</div><h2>Prepare a saída de áudio</h2><p>Os convidados precisam escolher a saída e confirmar que estão prontos.</p><button className="refresh-devices" onClick={refreshDevices} disabled={loadingDevices}><RefreshCw className={loadingDevices ? 'spinning' : ''} size={14}/> Atualizar dispositivos</button>{rematchDeviceOptions}<strong>{rematchReadyCount}/{participantMapRef.current.size} convidados prontos</strong><button className="primary big" disabled={rematchReadyCount < participantMapRef.current.size} onClick={startRematch}><Play/> Iniciar revanche</button></section></div>}
+    {guestRematchPending && onlineRole === 'guest' && <div className="rematch-overlay"><section><div className="eyebrow"><span/> REVANCHE</div><h2>Escolha sua saída de áudio</h2><p>Confirme onde a música deve tocar antes da nova partida.</p><button className="refresh-devices" onClick={refreshDevices} disabled={loadingDevices || guestRematchReady}><RefreshCw className={loadingDevices ? 'spinning' : ''} size={14}/> Atualizar dispositivos</button>{rematchDeviceOptions}{guestRematchReady ? <strong>Pronto! Aguardando o anfitrião…</strong> : <button className="primary big" onClick={confirmGuestRematchReady}><Check/> Estou pronto</button>}</section></div>}
 
     {screen === 'setup' && <main className="setup page">
       {onlineRole === 'host' && <div className="online-room"><div><small>CÓDIGO DA SALA</small><strong>{roomCode}</strong><button onClick={() => navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${roomCode}`)}><Copy size={15}/> Copiar link</button></div><span className={guestConnected ? 'connected' : ''}><i/>{players.length}/{roomCapacity} jogadores · {guestConnected ? 'sala pronta' : 'aguardando'}</span></div>}
@@ -498,7 +566,7 @@ function App() {
       </section>
     </main>}
 
-    {screen === 'result' && <main className="result center"><div className="trophy"><Trophy/></div><div className="eyebrow"><span/> FIM DE JOGO <span/></div><h1>{winner === null ? 'Empate!' : `${players[winner].name} venceu!`}</h1><p>{winner === null ? 'Vocês conhecem essa playlist igualmente bem.' : 'O ouvido mais rápido da rodada.'}</p><div className="final-scores">{[...players].sort((a,b) => b.score-a.score).map((p, i) => <div className={p.color} key={p.name}><b>#{i+1}</b><span>{p.name}<small>{p.score.toLocaleString('pt-BR')} pontos</small></span>{i === 0 && <Trophy/>}</div>)}</div><div className="result-actions"><button className="primary big" onClick={rematch}><RotateCcw/> Revanche</button><button className="ghost big" onClick={() => setScreen('setup')}>Trocar playlist</button></div></main>}
+    {screen === 'result' && <main className="result center"><div className="trophy"><Trophy/></div><div className="eyebrow"><span/> FIM DE JOGO <span/></div><h1>{winner === null ? 'Empate!' : `${players[winner].name} venceu!`}</h1><p>{winner === null ? 'Vocês conhecem essa playlist igualmente bem.' : 'O ouvido mais rápido da rodada.'}</p><div className="final-scores">{[...players].sort((a,b) => b.score-a.score).map((p, i) => <div className={p.color} key={p.name}><b>#{i+1}</b><span>{p.name}<small>{p.score.toLocaleString('pt-BR')} pontos</small></span>{i === 0 && <Trophy/>}</div>)}</div><div className="result-actions"><button className="primary big" onClick={requestRematch}><RotateCcw/> Revanche</button><button className="ghost big" onClick={() => setScreen('setup')}>Trocar playlist</button></div></main>}
     <footer>As músicas são reproduzidas pelo Spotify. Spotify é marca registrada de seus respectivos proprietários.</footer>
   </div>
 }

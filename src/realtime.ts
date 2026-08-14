@@ -20,6 +20,8 @@ export type GameEvent =
   | { type: 'buzz_granted'; clientId: string }
   | { type: 'buzz_denied'; clientId: string }
   | { type: 'answer'; text: string; clientId: string }
+  | { type: 'rematch_requested' }
+  | { type: 'rematch_ready'; clientId: string }
   | { type: 'result'; player: number; kind: 'song' | 'artist' | 'wrong' | 'timeout'; points: number; scores: number[]; finished: boolean; answer: string; song: string; artist: string }
   | { type: 'room_closed' }
 
