@@ -81,6 +81,8 @@ function App() {
   const [playbackNotice, setPlaybackNotice] = useState('')
   const playerRef = useRef<SpotifyPlayer | null>(null)
   const guestDeviceIdRef = useRef('')
+  const roundStartMsRef = useRef(new Map<number, number>())
+  const timeoutSentRef = useRef(false)
   const deadlineRef = useRef(0)
 
   const current = tracks[round]
@@ -141,7 +143,7 @@ function App() {
       if (event.type === 'joined' && event.clientId === clientIdRef.current) { setGuestConnected(true); setGuestPlayerIndex(event.playerIndex); setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] }))); setScreen('guest') }
       else if (event.type === 'lobby') setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] })))
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
-      else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); setGuestResult(null); if (event.playing || event.revealed) setGuestBuzzLocked(null) }
+      else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); if (!event.revealed) setGuestResult(null); if (event.playing) setGuestBuzzLocked(null) }
       else if (event.type === 'playback') {
         if (event.action === 'play' && guestDeviceIdRef.current) {
           setPlaybackNotice('Iniciando áudio sincronizado…')
@@ -156,8 +158,8 @@ function App() {
       else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) { setGuestBuzzLocked(null); setError('Outro jogador apertou primeiro.') }
       else if (event.type === 'result') {
         setGuestGranted(false); setGuestResult(event)
-        if (event.kind === 'wrong') setGuestBuzzLocked(null)
-        setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong', revealed: event.kind !== 'wrong', scores: event.scores } : old)
+        if (event.kind === 'wrong' && !event.finished) setGuestBuzzLocked(null)
+        setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong' && !event.finished, revealed: event.finished, scores: event.scores } : old)
       } else if (event.type === 'room_closed') { setError('O anfitrião encerrou a sala.'); setScreen('home') }
     }
   }
@@ -230,8 +232,14 @@ function App() {
       const left = Math.max(0, (deadlineRef.current - performance.now()) / 1000)
       setSeconds(left)
       if (left <= 0) {
+        if (timeoutSentRef.current) return
+        timeoutSentRef.current = true
         setPlaying(false); setRevealed(true); playerRef.current?.pause()
-        if (onlineRole === 'host') broadcast({ type: 'playback', action: 'pause' })
+        if (onlineRole === 'host' && current) {
+          broadcast({ type: 'playback', action: 'pause' })
+          broadcast({ type: 'result', player: -1, kind: 'timeout', points: 0, scores: players.map(player => player.score), finished: true, song: current.name, artist: current.artists.map(item => item.name).join(', ') })
+          broadcast({ type: 'game', round, total: tracks.length, seconds: 0, playing: false, revealed: true, scores: players.map(player => player.score), names: players.map(player => player.name) })
+        }
       }
     }
     tick(); const timer = window.setInterval(tick, 50)
@@ -285,6 +293,7 @@ function App() {
       playerRef.current = player
       setDeviceId(readyDeviceId)
       setTracks(gameTracks); setRound(0); setPlayers(p => p.map(x => ({ ...x, score: 0 })))
+      roundStartMsRef.current.clear()
       setScreen('game'); resetRound()
       if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: gameTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: [0, 0], names: players.map(player => player.name) })
     } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível iniciar.') }
@@ -293,6 +302,7 @@ function App() {
 
   function resetRound() {
     buzzLockedRef.current = false
+    timeoutSentRef.current = false
     setSeconds(ROUND_SECONDS); setPlaying(false); setAnswering(null)
     setAttempted(players.map(() => false)); setRevealed(false); setFeedback(null); setAnswer('')
   }
@@ -300,12 +310,15 @@ function App() {
   async function startMusic() {
     if (!current || !deviceId) { setError('O player ainda está conectando. Aguarde um instante.'); return }
     try {
-      await spotify.playTrack(deviceId, current.uri)
+      const maxStartMs = Math.max(0, current.duration_ms - ROUND_SECONDS * 1000)
+      const positionMs = roundStartMsRef.current.get(round) ?? Math.floor(Math.random() * (maxStartMs + 1))
+      roundStartMsRef.current.set(round, positionMs)
+      await spotify.playTrack(deviceId, current.uri, positionMs)
       buzzLockedRef.current = false
       deadlineRef.current = performance.now() + seconds * 1000
       setPlaying(true)
       if (onlineRole === 'host') {
-        await broadcast({ type: 'playback', action: 'play', uri: current.uri, positionMs: 0 })
+        await broadcast({ type: 'playback', action: 'play', uri: current.uri, positionMs })
         await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
       }
     } catch (e) { setError(e instanceof Error ? e.message : 'Erro ao tocar a música.') }
@@ -351,15 +364,16 @@ function App() {
     const basePoints = Math.max(10, Math.round((seconds / ROUND_SECONDS) * 1000))
     const points = gotSong || gotArtist ? seconds <= 5 ? 2 : gotSong ? basePoints : Math.round(basePoints / 2) : 0
     const nextPlayers = players.map((player, index) => index === playerIndex && points > 0 ? { ...player, score: player.score + points } : player)
+    const attemptsAfter = attempted.map((attemptedValue, index) => index === playerIndex ? true : attemptedValue)
+    const finished = gotSong || gotArtist || attemptsAfter.every(Boolean)
     setAttempted(prev => prev.map((v, i) => i === playerIndex ? true : v))
     setFeedback({ kind, points, player: playerIndex })
-    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), ...(kind !== 'wrong' ? { song: current.name, artist: current.artists.map(item => item.name).join(', ') } : {}) })
+    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), finished, song: current.name, artist: current.artists.map(item => item.name).join(', ') })
     if (gotSong || gotArtist) {
       setPlayers(nextPlayers)
       setRevealed(true); setAnswering(null)
     } else {
       setAnswering(null)
-      const attemptsAfter = attempted.map((value, index) => index === playerIndex ? true : value)
       if (attemptsAfter.every(Boolean)) {
         setRevealed(true)
         if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: true, scores: players.map(player => player.score), names: players.map(player => player.name) })
