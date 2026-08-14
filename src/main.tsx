@@ -96,6 +96,7 @@ function App() {
   const playerRef = useRef<SpotifyPlayer | null>(null)
   const guestDeviceIdRef = useRef('')
   const roundStartMsRef = useRef(new Map<number, number>())
+  const playedTrackIdsRef = useRef(new Set<string>())
   const timeoutSentRef = useRef(false)
   const deadlineRef = useRef(0)
 
@@ -329,9 +330,13 @@ function App() {
     setLoading(true); setError('')
     try {
       const lists = await Promise.all(selected.map(list => spotify.getPlaylistTracks(list.id)))
-      const all = [...new Map(lists.flat().map(track => [track.id, track])).values()]
+      const all = [...new Map(lists.flat().map(track => [
+        `${normalizeAnswer(track.name)}::${normalizeAnswer(track.artists[0]?.name ?? '')}`,
+        track,
+      ])).values()]
       if (all.length < 4) throw new Error('As playlists selecionadas precisam ter pelo menos 4 músicas disponíveis.')
       const gameTracks = shuffle(all).slice(0, Math.min(roundCount, all.length))
+      playedTrackIdsRef.current = new Set(gameTracks.map(track => track.id))
       let playback: { player: SpotifyPlayer; deviceId: string }
       if (selectedDevice !== 'browser') {
         const fallback = await spotify.createDesktopFallback(selectedDevice)
@@ -467,12 +472,14 @@ function App() {
   }
 
   function requestRematch() {
-    const previousIds = new Set(tracks.map(track => track.id))
-    const unseenTracks = trackPool.filter(track => !previousIds.has(track.id))
-    const wanted = Math.min(roundCount, trackPool.length)
-    const previouslyPlayed = trackPool.filter(track => previousIds.has(track.id))
-    const candidates = [...shuffle(unseenTracks), ...shuffle(previouslyPlayed)]
-    const nextTracks = candidates.slice(0, wanted)
+    const unseenTracks = trackPool.filter(track => !playedTrackIdsRef.current.has(track.id))
+    if (!unseenTracks.length) {
+      setError('Todas as músicas selecionadas já tocaram. Troque ou adicione outra playlist para continuar sem repetições.')
+      return
+    }
+    const wanted = Math.min(roundCount, unseenTracks.length)
+    const nextTracks = shuffle(unseenTracks).slice(0, wanted)
+    nextTracks.forEach(track => playedTrackIdsRef.current.add(track.id))
     if (onlineRole === 'local') {
       const resetPlayers = players.map(player => ({ ...player, score: 0 }))
       roundStartMsRef.current.clear()
