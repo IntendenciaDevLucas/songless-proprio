@@ -143,9 +143,13 @@ function App() {
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
       else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); setGuestResult(null); if (event.playing || event.revealed) setGuestBuzzLocked(null) }
       else if (event.type === 'playback') {
-        if (event.action === 'play' && guestDeviceIdRef.current) spotify.playTrack(guestDeviceIdRef.current, event.uri, event.positionMs).catch(e => setError(e.message))
-        else if (event.action === 'pause') playerRef.current?.pause()
-        else if (event.action === 'resume') playerRef.current?.resume()
+        if (event.action === 'play' && guestDeviceIdRef.current) {
+          setPlaybackNotice('Iniciando áudio sincronizado…')
+          spotify.playTrack(guestDeviceIdRef.current, event.uri, event.positionMs)
+            .then(() => setPlaybackNotice('Áudio sincronizado neste aparelho'))
+            .catch(e => setError(`Spotify deste aparelho: ${e.message}`))
+        } else if (event.action === 'pause') playerRef.current?.pause().catch(e => setError(`Spotify deste aparelho: ${e.message}`))
+        else if (event.action === 'resume') playerRef.current?.resume().catch(e => setError(`Spotify deste aparelho: ${e.message}`))
       }
       else if (event.type === 'buzz_locked') setGuestBuzzLocked({ clientId: event.clientId, player: event.player })
       else if (event.type === 'buzz_granted' && event.clientId === clientIdRef.current) { setGuestGranted(true); setGuestAnswer('') }
@@ -300,8 +304,10 @@ function App() {
       buzzLockedRef.current = false
       deadlineRef.current = performance.now() + seconds * 1000
       setPlaying(true)
-      if (onlineRole === 'host') broadcast({ type: 'playback', action: 'play', uri: current.uri, positionMs: 0 })
-      if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+      if (onlineRole === 'host') {
+        await broadcast({ type: 'playback', action: 'play', uri: current.uri, positionMs: 0 })
+        await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+      }
     } catch (e) { setError(e instanceof Error ? e.message : 'Erro ao tocar a música.') }
   }
 
@@ -351,8 +357,10 @@ function App() {
       } else {
         buzzLockedRef.current = false
         deadlineRef.current = performance.now() + seconds * 1000; await playerRef.current?.resume(); setPlaying(true)
-        if (onlineRole === 'host') broadcast({ type: 'playback', action: 'resume' })
-        if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+        if (onlineRole === 'host') {
+          await broadcast({ type: 'playback', action: 'resume' })
+          await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+        }
       }
     }
   }
