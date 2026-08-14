@@ -143,7 +143,14 @@ function App() {
       if (event.type === 'joined' && event.clientId === clientIdRef.current) { setGuestConnected(true); setGuestPlayerIndex(event.playerIndex); setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] }))); setScreen('guest') }
       else if (event.type === 'lobby') setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] })))
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
-      else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); if (!event.revealed) setGuestResult(null); if (event.playing) setGuestBuzzLocked(null) }
+      else if (event.type === 'game') {
+        setGuestGame(previous => {
+          if (previous && previous.round !== event.round) setGuestResult(null)
+          return event
+        })
+        setScreen('guest')
+        if (event.playing) setGuestBuzzLocked(null)
+      }
       else if (event.type === 'playback') {
         if (event.action === 'play' && guestDeviceIdRef.current) {
           setPlaybackNotice('Iniciando áudio sincronizado…')
@@ -237,7 +244,7 @@ function App() {
         setPlaying(false); setRevealed(true); playerRef.current?.pause()
         if (onlineRole === 'host' && current) {
           broadcast({ type: 'playback', action: 'pause' })
-          broadcast({ type: 'result', player: -1, kind: 'timeout', points: 0, scores: players.map(player => player.score), finished: true, song: current.name, artist: current.artists.map(item => item.name).join(', ') })
+          broadcast({ type: 'result', player: -1, kind: 'timeout', points: 0, scores: players.map(player => player.score), finished: true, answer: '', song: current.name, artist: current.artists.map(item => item.name).join(', ') })
           broadcast({ type: 'game', round, total: tracks.length, seconds: 0, playing: false, revealed: true, scores: players.map(player => player.score), names: players.map(player => player.name) })
         }
       }
@@ -368,7 +375,7 @@ function App() {
     const finished = gotSong || gotArtist || attemptsAfter.every(Boolean)
     setAttempted(prev => prev.map((v, i) => i === playerIndex ? true : v))
     setFeedback({ kind, points, player: playerIndex })
-    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), finished, song: current.name, artist: current.artists.map(item => item.name).join(', ') })
+    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), finished, answer: value.trim(), song: current.name, artist: current.artists.map(item => item.name).join(', ') })
     if (gotSong || gotArtist) {
       setPlayers(nextPlayers)
       setRevealed(true); setAnswering(null)
@@ -424,6 +431,8 @@ function App() {
     {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Cada jogador precisa conectar uma conta Spotify Premium para ouvir a música sincronizada no próprio aparelho.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label><button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> {connected ? 'Entrar e preparar áudio' : 'Conectar Spotify e entrar'}</button></form></main>}
 
     {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><p className="device-help">Áudio sincronizado com o Spotify deste aparelho.</p><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" disabled={Boolean(guestBuzzLocked)} onClick={() => { setGuestBuzzLocked({ clientId: clientIdRef.current, player: guestPlayerIndex }); broadcast({ type: 'buzz', clientId: clientIdRef.current }) }}><span>{guestBuzzLocked ? guestBuzzLocked.clientId === clientIdRef.current ? 'VOCÊ APERTOU!' : 'BLOQUEADO' : 'EU SEI!'}</span><small>{guestBuzzLocked ? `${guestGame.names[guestBuzzLocked.player] ?? 'Outro jogador'} apertou primeiro` : 'Aperte para responder'}</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
+
+    {screen === 'guest' && guestResult?.type === 'result' && guestResult.kind === 'wrong' && guestResult.player === guestPlayerIndex && <div className="toast notice"><X size={18}/><span>Seu chute: <b>{guestResult.answer}</b></span></div>}
 
     {screen === 'setup' && <main className="setup page">
       {onlineRole === 'host' && <div className="online-room"><div><small>CÓDIGO DA SALA</small><strong>{roomCode}</strong><button onClick={() => navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${roomCode}`)}><Copy size={15}/> Copiar link</button></div><span className={guestConnected ? 'connected' : ''}><i/>{players.length}/{roomCapacity} jogadores · {guestConnected ? 'sala pronta' : 'aguardando'}</span></div>}
