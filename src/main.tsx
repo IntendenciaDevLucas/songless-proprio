@@ -44,6 +44,7 @@ function App() {
   const [guestConnected, setGuestConnected] = useState(false)
   const [roomCapacity, setRoomCapacity] = useState(2)
   const [guestPlayerIndex, setGuestPlayerIndex] = useState(1)
+  const guestPlayerIndexRef = useRef(1)
   const [guestGame, setGuestGame] = useState<{ round: number; total: number; seconds: number; playing: boolean; revealed: boolean; scores: number[]; names: string[] } | null>(null)
   const [guestGranted, setGuestGranted] = useState(false)
   const [guestBuzzLocked, setGuestBuzzLocked] = useState<{ clientId: string; player: number } | null>(null)
@@ -140,7 +141,7 @@ function App() {
       return
     }
     if (role === 'guest') {
-      if (event.type === 'joined' && event.clientId === clientIdRef.current) { setGuestConnected(true); setGuestPlayerIndex(event.playerIndex); setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] }))); setScreen('guest') }
+      if (event.type === 'joined' && event.clientId === clientIdRef.current) { setGuestConnected(true); setGuestPlayerIndex(event.playerIndex); guestPlayerIndexRef.current = event.playerIndex; setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] }))); setScreen('guest') }
       else if (event.type === 'lobby') setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] })))
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
       else if (event.type === 'game') {
@@ -164,7 +165,8 @@ function App() {
       else if (event.type === 'buzz_granted' && event.clientId === clientIdRef.current) { setGuestGranted(true); setGuestAnswer('') }
       else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) { setGuestBuzzLocked(null); setError('Outro jogador apertou primeiro.') }
       else if (event.type === 'result') {
-        setGuestGranted(false); setGuestResult(event)
+        setGuestGranted(false)
+        if (event.finished || event.player === guestPlayerIndexRef.current) setGuestResult(event)
         if (event.kind === 'wrong' && !event.finished) setGuestBuzzLocked(null)
         setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong' && !event.finished, revealed: event.finished, scores: event.scores } : old)
       } else if (event.type === 'room_closed') { setError('O anfitrião encerrou a sala.'); setScreen('home') }
