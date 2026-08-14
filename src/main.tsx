@@ -80,7 +80,7 @@ function App() {
   const [attempted, setAttempted] = useState<boolean[]>([false, false])
   const [revealed, setRevealed] = useState(false)
   const [answer, setAnswer] = useState('')
-  const [feedback, setFeedback] = useState<{ kind: 'song' | 'artist' | 'wrong'; points: number; player: number } | null>(null)
+  const [feedback, setFeedback] = useState<{ kind: 'song' | 'artist' | 'wrong'; points: number; player: number; credit?: 'primary' | 'featured' } | null>(null)
   const [deviceId, setDeviceId] = useState('')
   const [devices, setDevices] = useState<SpotifyDevice[]>([])
   const [selectedDevice, setSelectedDevice] = useState('browser')
@@ -377,17 +377,20 @@ function App() {
     const gotSong = answerMatches(value, current.name)
     const featuredArtists = current.name.match(/\b(?:feat(?:uring)?|ft)\.?\s+([^)]+)/i)?.[1]
       .split(',').map(name => name.trim()).filter(Boolean) ?? []
-    const artistNames = [...current.artists.map(artist => artist.name), ...featuredArtists]
-    const gotArtist = !gotSong && artistNames.some(artist => artistAnswerMatches(value, artist))
+    const primaryArtist = current.artists[0]?.name ?? ''
+    const featuredArtistNames = [...current.artists.slice(1).map(artist => artist.name), ...featuredArtists]
+    const gotPrimaryArtist = !gotSong && Boolean(primaryArtist) && artistAnswerMatches(value, primaryArtist)
+    const gotFeaturedArtist = !gotSong && !gotPrimaryArtist && featuredArtistNames.some(artist => artistAnswerMatches(value, artist))
+    const gotArtist = gotPrimaryArtist || gotFeaturedArtist
     const kind = gotSong ? 'song' : gotArtist ? 'artist' : 'wrong'
     const basePoints = Math.max(10, Math.round((seconds / ROUND_SECONDS) * 1000))
-    const points = gotSong || gotArtist ? seconds <= 5 ? 2 : gotSong ? basePoints : Math.round(basePoints / 2) : 0
+    const points = gotSong || gotArtist ? seconds <= 5 ? 2 : gotSong ? basePoints : gotPrimaryArtist ? Math.round(basePoints / 2) : Math.round(basePoints / 3) : 0
     const nextPlayers = players.map((player, index) => index === playerIndex && points > 0 ? { ...player, score: player.score + points } : player)
     const attemptsAfter = attempted.map((attemptedValue, index) => index === playerIndex ? true : attemptedValue)
     const finished = gotSong || gotArtist || attemptsAfter.every(Boolean)
     if (onlineRole === 'host' && playerIndex === 0 && kind === 'wrong') setHostWrongGuess(value.trim())
     setAttempted(prev => prev.map((v, i) => i === playerIndex ? true : v))
-    setFeedback({ kind, points, player: playerIndex })
+    setFeedback({ kind, points, player: playerIndex, ...(gotPrimaryArtist ? { credit: 'primary' as const } : gotFeaturedArtist ? { credit: 'featured' as const } : {}) })
     if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), finished, answer: value.trim(), song: current.name, artist: current.artists.map(item => item.name).join(', ') })
     if (gotSong || gotArtist) {
       setPlayers(nextPlayers)
@@ -471,7 +474,7 @@ function App() {
         {answering !== null && !(onlineRole === 'host' && answering > 0) && <form className="type-answer" onSubmit={submitAnswer}><h3><span className={players[answering].color}>{players[answering].name}</span>, digite o nome da música ou do artista</h3><p>Nome da música = pontuação completa · artista/banda = metade</p><div><Music2/><input autoFocus value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Sua resposta…" autoComplete="off"/><button className="primary" disabled={answer.trim().length < 2}>Confirmar</button></div></form>}
         {onlineRole === 'host' && answering !== null && answering > 0 && <div className="remote-wait"><Wifi/><b>{players[answering].name} apertou primeiro</b><span>Aguardando a resposta no dispositivo remoto…</span></div>}
         {feedback?.kind === 'wrong' && !revealed && <div className="feedback wrong"><X/> Não foi dessa vez, {players[feedback.player].name}!</div>}
-        {revealed && <div className="reveal">{current.album.images[0] && <img src={current.album.images[0].url} alt="Capa do álbum"/>}<div>{feedback?.kind === 'song' ? <span className="correct"><Check/> Música certa · +{feedback.points} pontos</span> : feedback?.kind === 'artist' ? <span className="half"><Check/> Artista certo · +{feedback.points} pontos{seconds > 5 ? ' (metade)' : ' de consolação'}</span> : feedback?.kind === 'wrong' ? <span className="wrong-text">Ninguém acertou</span> : <span className="wrong-text">Tempo esgotado</span>}<h2>{current.name}</h2><p>{current.artists.map(a => a.name).join(', ')}</p><a href={current.external_urls.spotify} target="_blank" rel="noreferrer">Abrir no Spotify</a></div><button className="primary" onClick={nextRound}>{round + 1 >= tracks.length ? 'Ver resultado' : 'Próxima música'} <ChevronRight/></button></div>}
+        {revealed && <div className="reveal">{current.album.images[0] && <img src={current.album.images[0].url} alt="Capa do álbum"/>}<div>{feedback?.kind === 'song' ? <span className="correct"><Check/> Música certa · +{feedback.points} pontos</span> : feedback?.kind === 'artist' ? <span className="half"><Check/> Artista certo · +{feedback.points} pontos{seconds <= 5 ? ' de consolação' : feedback.credit === 'featured' ? ' (um terço)' : ' (metade)'}</span> : feedback?.kind === 'wrong' ? <span className="wrong-text">Ninguém acertou</span> : <span className="wrong-text">Tempo esgotado</span>}<h2>{current.name}</h2><p>{current.artists.map(a => a.name).join(', ')}</p><a href={current.external_urls.spotify} target="_blank" rel="noreferrer">Abrir no Spotify</a></div><button className="primary" onClick={nextRound}>{round + 1 >= tracks.length ? 'Ver resultado' : 'Próxima música'} <ChevronRight/></button></div>}
       </section>
     </main>}
 
