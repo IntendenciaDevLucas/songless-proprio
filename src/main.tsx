@@ -34,6 +34,11 @@ function answerMatches(input: string, expected: string) {
   return answer.length >= 5 && target.length >= 5 && (target.includes(answer) || answer.includes(target))
 }
 
+function artistAnswerMatches(input: string, expected: string) {
+  const withoutFeaturingPrefix = input.replace(/^\s*(feat(?:uring)?|ft)\.?\s+/i, '')
+  return answerMatches(withoutFeaturingPrefix, expected)
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>('home')
   const [onlineRole, setOnlineRole] = useState<OnlineRole>('local')
@@ -370,7 +375,10 @@ function App() {
   async function submitAnswerValue(value: string, playerIndex: number) {
     if (!current) return
     const gotSong = answerMatches(value, current.name)
-    const gotArtist = !gotSong && current.artists.some(artist => answerMatches(value, artist.name))
+    const featuredArtists = current.name.match(/\b(?:feat(?:uring)?|ft)\.?\s+([^)]+)/i)?.[1]
+      .split(',').map(name => name.trim()).filter(Boolean) ?? []
+    const artistNames = [...current.artists.map(artist => artist.name), ...featuredArtists]
+    const gotArtist = !gotSong && artistNames.some(artist => artistAnswerMatches(value, artist))
     const kind = gotSong ? 'song' : gotArtist ? 'artist' : 'wrong'
     const basePoints = Math.max(10, Math.round((seconds / ROUND_SECONDS) * 1000))
     const points = gotSong || gotArtist ? seconds <= 5 ? 2 : gotSong ? basePoints : Math.round(basePoints / 2) : 0
