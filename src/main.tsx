@@ -316,7 +316,10 @@ function App() {
     buzzLockedRef.current = true
     if (onlineRole === 'host') await broadcast({ type: 'buzz_locked', clientId: 'host', player: index })
     setPlaying(false); await playerRef.current?.pause()
-    if (onlineRole === 'host') await broadcast({ type: 'playback', action: 'pause' })
+    if (onlineRole === 'host') {
+      await broadcast({ type: 'playback', action: 'pause' })
+      await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+    }
     setAnswering(index); setAnswer('')
   }
 
@@ -325,7 +328,10 @@ function App() {
     if (playerIndex === undefined || screen !== 'game' || !playing || revealed || answering !== null || attempted[playerIndex] || buzzLockedRef.current) { broadcast({ type: 'buzz_denied', clientId }); return }
     buzzLockedRef.current = true
     await broadcast({ type: 'buzz_locked', clientId, player: playerIndex })
-    setPlaying(false); await playerRef.current?.pause(); await broadcast({ type: 'playback', action: 'pause' }); setAnswering(playerIndex); setAnswer('')
+    setPlaying(false); await playerRef.current?.pause()
+    await broadcast({ type: 'playback', action: 'pause' })
+    await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+    setAnswering(playerIndex); setAnswer('')
     await broadcast({ type: 'buzz_granted', clientId })
   }
 

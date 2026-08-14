@@ -219,7 +219,14 @@ export async function createDesktopFallback(preferredDeviceId?: string): Promise
 }
 
 export async function playTrack(deviceId: string, uri: string, positionMs = 0) {
-  await api<void>(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
-    method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs }),
-  })
+  try {
+    await api<void>(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+      method: 'PUT', body: JSON.stringify({ uris: [uri], position_ms: positionMs }),
+    })
+  } catch (error) {
+    if (error instanceof Error && error.message.toLowerCase().includes('forbidden')) {
+      throw new Error('Reprodução recusada (403). Esta conta precisa ser Premium e estar autorizada no User Management do aplicativo Spotify.')
+    }
+    throw error
+  }
 }
