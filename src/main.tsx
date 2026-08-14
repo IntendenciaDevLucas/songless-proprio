@@ -157,7 +157,7 @@ function App() {
       else if (event.type === 'result') {
         setGuestGranted(false); setGuestResult(event)
         if (event.kind === 'wrong') setGuestBuzzLocked(null)
-        setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong', revealed: event.kind !== 'wrong', scores: old.scores.map((score, index) => index === event.player ? score + event.points : score) } : old)
+        setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong', revealed: event.kind !== 'wrong', scores: event.scores } : old)
       } else if (event.type === 'room_closed') { setError('O anfitrião encerrou a sala.'); setScreen('home') }
     }
   }
@@ -349,12 +349,13 @@ function App() {
     const gotArtist = !gotSong && current.artists.some(artist => answerMatches(value, artist.name))
     const kind = gotSong ? 'song' : gotArtist ? 'artist' : 'wrong'
     const basePoints = Math.max(10, Math.round((seconds / ROUND_SECONDS) * 1000))
-    const points = gotSong ? basePoints : gotArtist ? Math.round(basePoints / 2) : 0
+    const points = gotSong || gotArtist ? seconds <= 5 ? 2 : gotSong ? basePoints : Math.round(basePoints / 2) : 0
+    const nextPlayers = players.map((player, index) => index === playerIndex && points > 0 ? { ...player, score: player.score + points } : player)
     setAttempted(prev => prev.map((v, i) => i === playerIndex ? true : v))
     setFeedback({ kind, points, player: playerIndex })
-    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, ...(kind !== 'wrong' ? { song: current.name, artist: current.artists.map(item => item.name).join(', ') } : {}) })
+    if (onlineRole === 'host') broadcast({ type: 'result', player: playerIndex, kind, points, scores: nextPlayers.map(player => player.score), ...(kind !== 'wrong' ? { song: current.name, artist: current.artists.map(item => item.name).join(', ') } : {}) })
     if (gotSong || gotArtist) {
-      setPlayers(prev => prev.map((p, i) => i === playerIndex ? { ...p, score: p.score + points } : p))
+      setPlayers(nextPlayers)
       setRevealed(true); setAnswering(null)
     } else {
       setAnswering(null)
@@ -433,7 +434,7 @@ function App() {
         {answering !== null && !(onlineRole === 'host' && answering > 0) && <form className="type-answer" onSubmit={submitAnswer}><h3><span className={players[answering].color}>{players[answering].name}</span>, digite o nome da música ou do artista</h3><p>Nome da música = pontuação completa · artista/banda = metade</p><div><Music2/><input autoFocus value={answer} onChange={e => setAnswer(e.target.value)} placeholder="Sua resposta…" autoComplete="off"/><button className="primary" disabled={answer.trim().length < 2}>Confirmar</button></div></form>}
         {onlineRole === 'host' && answering !== null && answering > 0 && <div className="remote-wait"><Wifi/><b>{players[answering].name} apertou primeiro</b><span>Aguardando a resposta no dispositivo remoto…</span></div>}
         {feedback?.kind === 'wrong' && !revealed && <div className="feedback wrong"><X/> Não foi dessa vez, {players[feedback.player].name}!</div>}
-        {revealed && <div className="reveal">{current.album.images[0] && <img src={current.album.images[0].url} alt="Capa do álbum"/>}<div>{feedback?.kind === 'song' ? <span className="correct"><Check/> Música certa · +{feedback.points} pontos</span> : feedback?.kind === 'artist' ? <span className="half"><Check/> Artista certo · +{feedback.points} pontos (metade)</span> : <span className="wrong-text">Tempo esgotado</span>}<h2>{current.name}</h2><p>{current.artists.map(a => a.name).join(', ')}</p><a href={current.external_urls.spotify} target="_blank" rel="noreferrer">Abrir no Spotify</a></div><button className="primary" onClick={nextRound}>{round + 1 >= tracks.length ? 'Ver resultado' : 'Próxima música'} <ChevronRight/></button></div>}
+        {revealed && <div className="reveal">{current.album.images[0] && <img src={current.album.images[0].url} alt="Capa do álbum"/>}<div>{feedback?.kind === 'song' ? <span className="correct"><Check/> Música certa · +{feedback.points} pontos</span> : feedback?.kind === 'artist' ? <span className="half"><Check/> Artista certo · +{feedback.points} pontos{seconds > 5 ? ' (metade)' : ' de consolação'}</span> : feedback?.kind === 'wrong' ? <span className="wrong-text">Ninguém acertou</span> : <span className="wrong-text">Tempo esgotado</span>}<h2>{current.name}</h2><p>{current.artists.map(a => a.name).join(', ')}</p><a href={current.external_urls.spotify} target="_blank" rel="noreferrer">Abrir no Spotify</a></div><button className="primary" onClick={nextRound}>{round + 1 >= tracks.length ? 'Ver resultado' : 'Próxima música'} <ChevronRight/></button></div>}
       </section>
     </main>}
 
