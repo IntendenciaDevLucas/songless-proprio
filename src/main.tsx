@@ -73,6 +73,7 @@ function App() {
   ])
   const [roundCount, setRoundCount] = useState(10)
   const [tracks, setTracks] = useState<Track[]>([])
+  const [trackPool, setTrackPool] = useState<Track[]>([])
   const [round, setRound] = useState(0)
   const [seconds, setSeconds] = useState(ROUND_SECONDS)
   const [playing, setPlaying] = useState(false)
@@ -307,7 +308,7 @@ function App() {
       const { player, deviceId: readyDeviceId } = playback
       playerRef.current = player
       setDeviceId(readyDeviceId)
-      setTracks(gameTracks); setRound(0); setPlayers(p => p.map(x => ({ ...x, score: 0 })))
+      setTrackPool(all); setTracks(gameTracks); setRound(0); setPlayers(p => p.map(x => ({ ...x, score: 0 })))
       roundStartMsRef.current.clear()
       setScreen('game'); resetRound()
       if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: gameTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: players.map(() => 0), names: players.map(player => player.name) })
@@ -423,6 +424,19 @@ function App() {
     if (onlineRole === 'host') broadcast({ type: 'game', round: next, total: tracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
   }
 
+  function rematch() {
+    const previousIds = new Set(tracks.map(track => track.id))
+    const unseenTracks = trackPool.filter(track => !previousIds.has(track.id))
+    const wanted = Math.min(roundCount, trackPool.length)
+    const previouslyPlayed = trackPool.filter(track => previousIds.has(track.id))
+    const candidates = [...shuffle(unseenTracks), ...shuffle(previouslyPlayed)]
+    const nextTracks = candidates.slice(0, wanted)
+    const resetPlayers = players.map(player => ({ ...player, score: 0 }))
+    roundStartMsRef.current.clear()
+    setTracks(nextTracks); setRound(0); setPlayers(resetPlayers); setScreen('game'); resetRound()
+    if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: nextTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: resetPlayers.map(() => 0), names: resetPlayers.map(player => player.name) })
+  }
+
   const bestScore = Math.max(...players.map(player => player.score))
   const leaders = players.map((player, index) => ({ ...player, index })).filter(player => player.score === bestScore)
   const winner = leaders.length === 1 ? leaders[0].index : null
@@ -478,7 +492,7 @@ function App() {
       </section>
     </main>}
 
-    {screen === 'result' && <main className="result center"><div className="trophy"><Trophy/></div><div className="eyebrow"><span/> FIM DE JOGO <span/></div><h1>{winner === null ? 'Empate!' : `${players[winner].name} venceu!`}</h1><p>{winner === null ? 'Vocês conhecem essa playlist igualmente bem.' : 'O ouvido mais rápido da rodada.'}</p><div className="final-scores">{[...players].sort((a,b) => b.score-a.score).map((p, i) => <div className={p.color} key={p.name}><b>#{i+1}</b><span>{p.name}<small>{p.score.toLocaleString('pt-BR')} pontos</small></span>{i === 0 && <Trophy/>}</div>)}</div><div className="result-actions"><button className="primary big" onClick={() => { setScreen('game'); setRound(0); setPlayers(p => p.map(x => ({...x, score: 0}))); setTracks(t => shuffle(t)); resetRound() }}><RotateCcw/> Revanche</button><button className="ghost big" onClick={() => setScreen('setup')}>Trocar playlist</button></div></main>}
+    {screen === 'result' && <main className="result center"><div className="trophy"><Trophy/></div><div className="eyebrow"><span/> FIM DE JOGO <span/></div><h1>{winner === null ? 'Empate!' : `${players[winner].name} venceu!`}</h1><p>{winner === null ? 'Vocês conhecem essa playlist igualmente bem.' : 'O ouvido mais rápido da rodada.'}</p><div className="final-scores">{[...players].sort((a,b) => b.score-a.score).map((p, i) => <div className={p.color} key={p.name}><b>#{i+1}</b><span>{p.name}<small>{p.score.toLocaleString('pt-BR')} pontos</small></span>{i === 0 && <Trophy/>}</div>)}</div><div className="result-actions"><button className="primary big" onClick={rematch}><RotateCcw/> Revanche</button><button className="ghost big" onClick={() => setScreen('setup')}>Trocar playlist</button></div></main>}
     <footer>As músicas são reproduzidas pelo Spotify. Spotify é marca registrada de seus respectivos proprietários.</footer>
   </div>
 }
