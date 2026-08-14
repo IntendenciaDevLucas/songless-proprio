@@ -295,7 +295,7 @@ function App() {
       setTracks(gameTracks); setRound(0); setPlayers(p => p.map(x => ({ ...x, score: 0 })))
       roundStartMsRef.current.clear()
       setScreen('game'); resetRound()
-      if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: gameTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: [0, 0], names: players.map(player => player.name) })
+      if (onlineRole === 'host') broadcast({ type: 'game', round: 0, total: gameTracks.length, seconds: ROUND_SECONDS, playing: false, revealed: false, scores: players.map(() => 0), names: players.map(player => player.name) })
     } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível iniciar.') }
     finally { setLoading(false) }
   }
