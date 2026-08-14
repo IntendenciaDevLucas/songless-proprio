@@ -80,16 +80,28 @@ function App() {
   const [loadingDevices, setLoadingDevices] = useState(false)
   const [playbackNotice, setPlaybackNotice] = useState('')
   const playerRef = useRef<SpotifyPlayer | null>(null)
+  const guestDeviceIdRef = useRef('')
   const deadlineRef = useRef(0)
 
   const current = tracks[round]
   useEffect(() => {
     ;(async () => {
       try {
-        await spotify.handleCallback()
+        const returnedFromSpotify = await spotify.handleCallback()
         const token = await spotify.getToken()
         setConnected(Boolean(token))
         if (token) setPlaylists(await spotify.getPlaylists())
+        if (returnedFromSpotify) {
+          const pendingRoom = sessionStorage.getItem('songless_pending_room')
+          const pendingName = sessionStorage.getItem('songless_pending_name')
+          if (pendingRoom) {
+            setJoinCode(pendingRoom)
+            if (pendingName) setGuestName(pendingName)
+            sessionStorage.removeItem('songless_pending_room')
+            sessionStorage.removeItem('songless_pending_name')
+            setScreen('join')
+          }
+        }
       } catch (e) { setError(e instanceof Error ? e.message : 'Erro ao conectar.') }
       finally { setLoading(false) }
     })()
@@ -130,6 +142,11 @@ function App() {
       else if (event.type === 'lobby') setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] })))
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
       else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); setGuestResult(null); if (event.playing || event.revealed) setGuestBuzzLocked(null) }
+      else if (event.type === 'playback') {
+        if (event.action === 'play' && guestDeviceIdRef.current) spotify.playTrack(guestDeviceIdRef.current, event.uri, event.positionMs).catch(e => setError(e.message))
+        else if (event.action === 'pause') playerRef.current?.pause()
+        else if (event.action === 'resume') playerRef.current?.resume()
+      }
       else if (event.type === 'buzz_locked') setGuestBuzzLocked({ clientId: event.clientId, player: event.player })
       else if (event.type === 'buzz_granted' && event.clientId === clientIdRef.current) { setGuestGranted(true); setGuestAnswer('') }
       else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) { setGuestBuzzLocked(null); setError('Outro jogador apertou primeiro.') }
@@ -164,7 +181,29 @@ function App() {
   async function enterRoom(event: React.FormEvent) {
     event.preventDefault()
     if (joinCode.trim().length < 6 || !guestName.trim()) return
-    setScreen('guest'); await connectOnline('guest', joinCode.trim())
+    if (!connected) {
+      sessionStorage.setItem('songless_pending_room', joinCode.trim().toUpperCase())
+      sessionStorage.setItem('songless_pending_name', guestName.trim())
+      await spotify.login()
+      return
+    }
+    setLoading(true); setError('')
+    try {
+      let playback: { player: SpotifyPlayer; deviceId: string }
+      try {
+        playback = await spotify.createPlayer(setError)
+        setPlaybackNotice('Áudio sincronizado neste navegador')
+      } catch {
+        const fallback = await spotify.createDesktopFallback()
+        playback = fallback
+        setPlaybackNotice(`Áudio sincronizado em: ${fallback.deviceName}`)
+      }
+      playerRef.current = playback.player
+      guestDeviceIdRef.current = playback.deviceId
+      setScreen('guest')
+      await connectOnline('guest', joinCode.trim())
+    } catch (e) { setError(e instanceof Error ? e.message : 'Não foi possível preparar o Spotify deste aparelho.') }
+    finally { setLoading(false) }
   }
 
   useEffect(() => {
@@ -186,7 +225,10 @@ function App() {
     const tick = () => {
       const left = Math.max(0, (deadlineRef.current - performance.now()) / 1000)
       setSeconds(left)
-      if (left <= 0) { setPlaying(false); setRevealed(true); playerRef.current?.pause() }
+      if (left <= 0) {
+        setPlaying(false); setRevealed(true); playerRef.current?.pause()
+        if (onlineRole === 'host') broadcast({ type: 'playback', action: 'pause' })
+      }
     }
     tick(); const timer = window.setInterval(tick, 50)
     return () => clearInterval(timer)
@@ -258,6 +300,7 @@ function App() {
       buzzLockedRef.current = false
       deadlineRef.current = performance.now() + seconds * 1000
       setPlaying(true)
+      if (onlineRole === 'host') broadcast({ type: 'playback', action: 'play', uri: current.uri, positionMs: 0 })
       if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
     } catch (e) { setError(e instanceof Error ? e.message : 'Erro ao tocar a música.') }
   }
@@ -266,7 +309,9 @@ function App() {
     if (attempted[index] || buzzLockedRef.current) return
     buzzLockedRef.current = true
     if (onlineRole === 'host') await broadcast({ type: 'buzz_locked', clientId: 'host', player: index })
-    setPlaying(false); await playerRef.current?.pause(); setAnswering(index); setAnswer('')
+    setPlaying(false); await playerRef.current?.pause()
+    if (onlineRole === 'host') await broadcast({ type: 'playback', action: 'pause' })
+    setAnswering(index); setAnswer('')
   }
 
   remoteBuzzRef.current = async clientId => {
@@ -274,7 +319,7 @@ function App() {
     if (playerIndex === undefined || screen !== 'game' || !playing || revealed || answering !== null || attempted[playerIndex] || buzzLockedRef.current) { broadcast({ type: 'buzz_denied', clientId }); return }
     buzzLockedRef.current = true
     await broadcast({ type: 'buzz_locked', clientId, player: playerIndex })
-    setPlaying(false); await playerRef.current?.pause(); setAnswering(playerIndex); setAnswer('')
+    setPlaying(false); await playerRef.current?.pause(); await broadcast({ type: 'playback', action: 'pause' }); setAnswering(playerIndex); setAnswer('')
     await broadcast({ type: 'buzz_granted', clientId })
   }
 
@@ -306,6 +351,7 @@ function App() {
       } else {
         buzzLockedRef.current = false
         deadlineRef.current = performance.now() + seconds * 1000; await playerRef.current?.resume(); setPlaying(true)
+        if (onlineRole === 'host') broadcast({ type: 'playback', action: 'resume' })
         if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
       }
     }
@@ -344,9 +390,9 @@ function App() {
       <div className="features"><span><Users/> 2 jogadores</span><span><Clock3/> Pontos por velocidade</span><span><Trophy/> 10 rodadas</span></div>
     </main>}
 
-    {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Você não precisa conectar o Spotify. Digite seu nome e o código enviado pelo anfitrião.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label><button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> Entrar</button></form></main>}
+    {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Cada jogador precisa conectar uma conta Spotify Premium para ouvir a música sincronizada no próprio aparelho.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label><button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> {connected ? 'Entrar e preparar áudio' : 'Conectar Spotify e entrar'}</button></form></main>}
 
-    {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><p className="device-help">O áudio toca no dispositivo do anfitrião.</p><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" disabled={Boolean(guestBuzzLocked)} onClick={() => { setGuestBuzzLocked({ clientId: clientIdRef.current, player: guestPlayerIndex }); broadcast({ type: 'buzz', clientId: clientIdRef.current }) }}><span>{guestBuzzLocked ? guestBuzzLocked.clientId === clientIdRef.current ? 'VOCÊ APERTOU!' : 'BLOQUEADO' : 'EU SEI!'}</span><small>{guestBuzzLocked ? `${guestGame.names[guestBuzzLocked.player] ?? 'Outro jogador'} apertou primeiro` : 'Aperte para responder'}</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
+    {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><p className="device-help">Áudio sincronizado com o Spotify deste aparelho.</p><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" disabled={Boolean(guestBuzzLocked)} onClick={() => { setGuestBuzzLocked({ clientId: clientIdRef.current, player: guestPlayerIndex }); broadcast({ type: 'buzz', clientId: clientIdRef.current }) }}><span>{guestBuzzLocked ? guestBuzzLocked.clientId === clientIdRef.current ? 'VOCÊ APERTOU!' : 'BLOQUEADO' : 'EU SEI!'}</span><small>{guestBuzzLocked ? `${guestGame.names[guestBuzzLocked.player] ?? 'Outro jogador'} apertou primeiro` : 'Aperte para responder'}</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
 
     {screen === 'setup' && <main className="setup page">
       {onlineRole === 'host' && <div className="online-room"><div><small>CÓDIGO DA SALA</small><strong>{roomCode}</strong><button onClick={() => navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${roomCode}`)}><Copy size={15}/> Copiar link</button></div><span className={guestConnected ? 'connected' : ''}><i/>{players.length}/{roomCapacity} jogadores · {guestConnected ? 'sala pronta' : 'aguardando'}</span></div>}
