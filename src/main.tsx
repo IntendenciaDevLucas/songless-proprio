@@ -21,7 +21,7 @@ function shuffle<T>(input: T[]) {
 }
 
 function normalizeAnswer(value: string) {
-  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/&/g, ' e ')
     .replace(/\b(feat|ft|featuring|remaster(ed)?|ao vivo|live|radio edit|version|versao)\b.*$/g, '')
     .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
