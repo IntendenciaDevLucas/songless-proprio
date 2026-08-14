@@ -46,6 +46,7 @@ function App() {
   const [guestPlayerIndex, setGuestPlayerIndex] = useState(1)
   const [guestGame, setGuestGame] = useState<{ round: number; total: number; seconds: number; playing: boolean; revealed: boolean; scores: number[]; names: string[] } | null>(null)
   const [guestGranted, setGuestGranted] = useState(false)
+  const [guestBuzzLocked, setGuestBuzzLocked] = useState<{ clientId: string; player: number } | null>(null)
   const [guestAnswer, setGuestAnswer] = useState('')
   const [guestResult, setGuestResult] = useState<GameEvent | null>(null)
   const channelRef = useRef<RealtimeChannel | null>(null)
@@ -53,6 +54,7 @@ function App() {
   const remoteBuzzRef = useRef<(clientId: string) => void>(() => undefined)
   const remoteAnswerRef = useRef<(text: string, clientId: string) => void>(() => undefined)
   const participantMapRef = useRef(new Map<string, number>())
+  const buzzLockedRef = useRef(false)
   const capacityRef = useRef(2)
   const [connected, setConnected] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -127,11 +129,13 @@ function App() {
       if (event.type === 'joined' && event.clientId === clientIdRef.current) { setGuestConnected(true); setGuestPlayerIndex(event.playerIndex); setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] }))); setScreen('guest') }
       else if (event.type === 'lobby') setPlayers(event.names.map((name, index) => ({ name, score: 0, color: PLAYER_COLORS[index] })))
       else if (event.type === 'room_full' && event.clientId === clientIdRef.current) { setError('Esta sala já atingiu o limite de jogadores.'); setScreen('join') }
-      else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); setGuestResult(null) }
+      else if (event.type === 'game') { setGuestGame(event); setScreen('guest'); setGuestResult(null); if (event.playing || event.revealed) setGuestBuzzLocked(null) }
+      else if (event.type === 'buzz_locked') setGuestBuzzLocked({ clientId: event.clientId, player: event.player })
       else if (event.type === 'buzz_granted' && event.clientId === clientIdRef.current) { setGuestGranted(true); setGuestAnswer('') }
-      else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) setError('Outro jogador apertou primeiro.')
+      else if (event.type === 'buzz_denied' && event.clientId === clientIdRef.current) { setGuestBuzzLocked(null); setError('Outro jogador apertou primeiro.') }
       else if (event.type === 'result') {
         setGuestGranted(false); setGuestResult(event)
+        if (event.kind === 'wrong') setGuestBuzzLocked(null)
         setGuestGame(old => old ? { ...old, playing: event.kind === 'wrong', revealed: event.kind !== 'wrong', scores: old.scores.map((score, index) => index === event.player ? score + event.points : score) } : old)
       } else if (event.type === 'room_closed') { setError('O anfitrião encerrou a sala.'); setScreen('home') }
     }
@@ -242,6 +246,7 @@ function App() {
   }
 
   function resetRound() {
+    buzzLockedRef.current = false
     setSeconds(ROUND_SECONDS); setPlaying(false); setAnswering(null)
     setAttempted(players.map(() => false)); setRevealed(false); setFeedback(null); setAnswer('')
   }
@@ -250,6 +255,7 @@ function App() {
     if (!current || !deviceId) { setError('O player ainda está conectando. Aguarde um instante.'); return }
     try {
       await spotify.playTrack(deviceId, current.uri)
+      buzzLockedRef.current = false
       deadlineRef.current = performance.now() + seconds * 1000
       setPlaying(true)
       if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
@@ -257,14 +263,19 @@ function App() {
   }
 
   async function buzz(index: number) {
-    if (attempted[index]) return
+    if (attempted[index] || buzzLockedRef.current) return
+    buzzLockedRef.current = true
+    if (onlineRole === 'host') await broadcast({ type: 'buzz_locked', clientId: 'host', player: index })
     setPlaying(false); await playerRef.current?.pause(); setAnswering(index); setAnswer('')
   }
 
   remoteBuzzRef.current = async clientId => {
     const playerIndex = participantMapRef.current.get(clientId)
-    if (playerIndex === undefined || screen !== 'game' || !playing || revealed || answering !== null || attempted[playerIndex]) { broadcast({ type: 'buzz_denied', clientId }); return }
-    await buzz(playerIndex); broadcast({ type: 'buzz_granted', clientId })
+    if (playerIndex === undefined || screen !== 'game' || !playing || revealed || answering !== null || attempted[playerIndex] || buzzLockedRef.current) { broadcast({ type: 'buzz_denied', clientId }); return }
+    buzzLockedRef.current = true
+    await broadcast({ type: 'buzz_locked', clientId, player: playerIndex })
+    setPlaying(false); await playerRef.current?.pause(); setAnswering(playerIndex); setAnswer('')
+    await broadcast({ type: 'buzz_granted', clientId })
   }
 
   async function submitAnswer(event: React.FormEvent) {
@@ -293,6 +304,7 @@ function App() {
         setRevealed(true)
         if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: true, scores: players.map(player => player.score), names: players.map(player => player.name) })
       } else {
+        buzzLockedRef.current = false
         deadlineRef.current = performance.now() + seconds * 1000; await playerRef.current?.resume(); setPlaying(true)
         if (onlineRole === 'host') broadcast({ type: 'game', round, total: tracks.length, seconds, playing: true, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
       }
@@ -334,7 +346,7 @@ function App() {
 
     {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Você não precisa conectar o Spotify. Digite seu nome e o código enviado pelo anfitrião.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label><button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> Entrar</button></form></main>}
 
-    {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" onClick={() => broadcast({ type: 'buzz', clientId: clientIdRef.current })}><span>EU SEI!</span><small>Aperte para responder</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
+    {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><p className="device-help">O áudio toca no dispositivo do anfitrião.</p><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" disabled={Boolean(guestBuzzLocked)} onClick={() => { setGuestBuzzLocked({ clientId: clientIdRef.current, player: guestPlayerIndex }); broadcast({ type: 'buzz', clientId: clientIdRef.current }) }}><span>{guestBuzzLocked ? guestBuzzLocked.clientId === clientIdRef.current ? 'VOCÊ APERTOU!' : 'BLOQUEADO' : 'EU SEI!'}</span><small>{guestBuzzLocked ? `${guestGame.names[guestBuzzLocked.player] ?? 'Outro jogador'} apertou primeiro` : 'Aperte para responder'}</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
 
     {screen === 'setup' && <main className="setup page">
       {onlineRole === 'host' && <div className="online-room"><div><small>CÓDIGO DA SALA</small><strong>{roomCode}</strong><button onClick={() => navigator.clipboard.writeText(`${location.origin}${location.pathname}?room=${roomCode}`)}><Copy size={15}/> Copiar link</button></div><span className={guestConnected ? 'connected' : ''}><i/>{players.length}/{roomCapacity} jogadores · {guestConnected ? 'sala pronta' : 'aguardando'}</span></div>}

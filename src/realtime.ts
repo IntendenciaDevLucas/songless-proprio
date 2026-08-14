@@ -14,6 +14,7 @@ export type GameEvent =
   | { type: 'room_full'; clientId: string }
   | { type: 'game'; round: number; total: number; seconds: number; playing: boolean; revealed: boolean; scores: number[]; names: string[] }
   | { type: 'buzz'; clientId: string }
+  | { type: 'buzz_locked'; clientId: string; player: number }
   | { type: 'buzz_granted'; clientId: string }
   | { type: 'buzz_denied'; clientId: string }
   | { type: 'answer'; text: string; clientId: string }
