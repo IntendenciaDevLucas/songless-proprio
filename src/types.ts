@@ -5,7 +5,7 @@ export type Playlist = {
   name: string
   description: string
   images: SpotifyImage[]
-  owner: { display_name: string }
+  owner: { id: string; display_name: string }
   items?: { total: number }
   tracks?: { total: number }
 }

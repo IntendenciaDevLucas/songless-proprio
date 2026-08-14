@@ -106,6 +106,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getPlaylists() {
+  const profile = await api<{ id: string }>('/me')
   const first = await api<{ items: Playlist[]; next: string | null }>('/me/playlists?limit=50')
   const all = [...first.items]
   let next = first.next
@@ -113,7 +114,10 @@ export async function getPlaylists() {
     const page = await api<{ items: Playlist[]; next: string | null }>(next)
     all.push(...page.items); next = page.next
   }
-  return all
+  // Apps no modo Development do Spotify podem receber 403 ao consultar os itens
+  // de playlists seguidas/editoriais. Playlists pertencentes ao usuário continuam
+  // disponíveis para o fluxo do jogo.
+  return all.filter(playlist => playlist.owner?.id === profile.id)
 }
 
 export async function getPlaylistTracks(id: string) {
@@ -121,7 +125,15 @@ export async function getPlaylistTracks(id: string) {
   const tracks: Track[] = []
   while (next) {
     // O endpoint atual usa `item`; `track` mantém compatibilidade com o formato antigo.
-    const page: { items: { item?: Track; track?: Track }[]; next: string | null } = await api(next)
+    let page: { items: { item?: Track; track?: Track }[]; next: string | null }
+    try {
+      page = await api(next)
+    } catch (error) {
+      if (error instanceof Error && error.message.toLowerCase().includes('forbidden')) {
+        throw new Error('O Spotify bloqueou esta playlist. Use uma playlist criada pela sua própria conta e tente novamente.')
+      }
+      throw error
+    }
     tracks.push(...page.items.map(entry => entry.item ?? entry.track).filter((track): track is Track =>
       Boolean(track?.id && track.uri && track.album && track.artists?.length && track.is_playable !== false)))
     next = page.next
