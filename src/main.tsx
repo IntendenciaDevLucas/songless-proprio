@@ -315,11 +315,12 @@ function App() {
     if (attempted[index] || buzzLockedRef.current) return
     buzzLockedRef.current = true
     if (onlineRole === 'host') await broadcast({ type: 'buzz_locked', clientId: 'host', player: index })
-    setPlaying(false); await playerRef.current?.pause()
+    setPlaying(false)
     if (onlineRole === 'host') {
       await broadcast({ type: 'playback', action: 'pause' })
       await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
     }
+    await playerRef.current?.pause().catch(e => setError(e instanceof Error ? e.message : 'Não foi possível pausar o Spotify.'))
     setAnswering(index); setAnswer('')
   }
 
@@ -328,9 +329,10 @@ function App() {
     if (playerIndex === undefined || screen !== 'game' || !playing || revealed || answering !== null || attempted[playerIndex] || buzzLockedRef.current) { broadcast({ type: 'buzz_denied', clientId }); return }
     buzzLockedRef.current = true
     await broadcast({ type: 'buzz_locked', clientId, player: playerIndex })
-    setPlaying(false); await playerRef.current?.pause()
+    setPlaying(false)
     await broadcast({ type: 'playback', action: 'pause' })
     await broadcast({ type: 'game', round, total: tracks.length, seconds, playing: false, revealed: false, scores: players.map(player => player.score), names: players.map(player => player.name) })
+    await playerRef.current?.pause().catch(e => setError(e instanceof Error ? e.message : 'Não foi possível pausar o Spotify.'))
     setAnswering(playerIndex); setAnswer('')
     await broadcast({ type: 'buzz_granted', clientId })
   }
