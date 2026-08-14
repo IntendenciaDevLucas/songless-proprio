@@ -212,13 +212,19 @@ function App() {
     setLoading(true); setError('')
     try {
       let playback: { player: SpotifyPlayer; deviceId: string }
-      try {
-        playback = await spotify.createPlayer(setError)
-        setPlaybackNotice('Áudio sincronizado neste navegador')
-      } catch {
-        const fallback = await spotify.createDesktopFallback()
+      if (selectedDevice !== 'browser') {
+        const fallback = await spotify.createDesktopFallback(selectedDevice)
         playback = fallback
         setPlaybackNotice(`Áudio sincronizado em: ${fallback.deviceName}`)
+      } else {
+        try {
+          playback = await spotify.createPlayer(setError)
+          setPlaybackNotice('Áudio sincronizado neste navegador')
+        } catch {
+          const fallback = await spotify.createDesktopFallback()
+          playback = fallback
+          setPlaybackNotice(`Player do navegador indisponível · áudio em: ${fallback.deviceName}`)
+        }
       }
       playerRef.current = playback.player
       guestDeviceIdRef.current = playback.deviceId
@@ -229,7 +235,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (screen === 'setup' && connected) refreshDevices()
+    if ((screen === 'setup' || screen === 'join') && connected) refreshDevices()
   }, [screen, connected])
 
   async function refreshDevices() {
@@ -458,7 +464,7 @@ function App() {
       <div className="features"><span><Users/> 2 jogadores</span><span><Clock3/> Pontos por velocidade</span><span><Trophy/> 10 rodadas</span></div>
     </main>}
 
-    {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Cada jogador precisa conectar uma conta Spotify Premium para ouvir a música sincronizada no próprio aparelho.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label><button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> {connected ? 'Entrar e preparar áudio' : 'Conectar Spotify e entrar'}</button></form></main>}
+    {screen === 'join' && <main className="join-page center"><div className="eyebrow"><span/> PARTIDA ONLINE</div><h2>Entrar na sala</h2><p>Cada jogador precisa conectar uma conta Spotify Premium para ouvir a música sincronizada no próprio aparelho.</p><form onSubmit={enterRoom}><label><small>SEU NOME</small><input value={guestName} maxLength={18} onChange={event => setGuestName(event.target.value)} /></label><label><small>CÓDIGO DA SALA</small><input className="room-input" value={joinCode} maxLength={6} placeholder="AB12CD" onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}/></label>{connected && <section className="guest-device-picker"><div><small>SAÍDA DE ÁUDIO</small><button type="button" className="refresh-devices" onClick={refreshDevices} disabled={loadingDevices}><RefreshCw className={loadingDevices ? 'spinning' : ''} size={14}/> Atualizar</button></div><div className="device-options"><button type="button" className={selectedDevice === 'browser' ? 'selected' : ''} onClick={() => setSelectedDevice('browser')}><Monitor/><span><b>Este navegador</b><small>Reproduzir neste aparelho</small></span>{selectedDevice === 'browser' && <Check/>}</button>{devices.map(device => <button type="button" key={device.id} className={selectedDevice === device.id ? 'selected' : ''} onClick={() => setSelectedDevice(device.id!)}>{device.type.toLowerCase() === 'computer' ? <Monitor/> : <Speaker/>}<span><b>{device.name}</b><small>{device.type}{device.is_active ? ' · ativo agora' : ''}</small></span>{selectedDevice === device.id && <Check/>}</button>)}</div></section>}<button className="primary big" disabled={joinCode.length !== 6 || !guestName.trim()}><Wifi/> {connected ? 'Entrar com esta saída' : 'Conectar Spotify e entrar'}</button></form></main>}
 
     {screen === 'guest' && <main className="guest-page page center"><div className="room-pill"><Wifi size={14}/> SALA {roomCode} · {roomStatus}</div>{!guestConnected || !guestGame ? <><div className="loader small-loader"/><h2>Aguardando o anfitrião…</h2><p>Deixe esta página aberta. A partida começará quando ele terminar a configuração.</p></> : <><div className="scorebar guest-scores">{guestGame.names.map((name, index) => <div className={`score ${index ? 'violet' : 'green'}`} key={index}><span>{name}</span><b>{guestGame.scores[index].toLocaleString('pt-BR')}</b></div>)}</div><p className="guest-round">RODADA {guestGame.round + 1} DE {guestGame.total}</p><div className="vinyl"><div><Music2/></div></div><p className="device-help">Áudio sincronizado com o Spotify deste aparelho.</p><div className="timer"><b>{guestGame.seconds.toFixed(1)}</b><small>SEGUNDOS</small></div>{guestGranted ? <form className="type-answer guest-answer" onSubmit={event => { event.preventDefault(); broadcast({ type: 'answer', text: guestAnswer, clientId: clientIdRef.current }); setGuestGranted(false) }}><h3>Sua vez! Digite a música ou artista</h3><div><Music2/><input autoFocus value={guestAnswer} onChange={event => setGuestAnswer(event.target.value)} placeholder="Sua resposta…"/><button className="primary" disabled={guestAnswer.trim().length < 2}>Enviar</button></div></form> : guestGame.playing && !guestGame.revealed ? <button className="remote-buzzer" disabled={Boolean(guestBuzzLocked)} onClick={() => { setGuestBuzzLocked({ clientId: clientIdRef.current, player: guestPlayerIndex }); broadcast({ type: 'buzz', clientId: clientIdRef.current }) }}><span>{guestBuzzLocked ? guestBuzzLocked.clientId === clientIdRef.current ? 'VOCÊ APERTOU!' : 'BLOQUEADO' : 'EU SEI!'}</span><small>{guestBuzzLocked ? `${guestGame.names[guestBuzzLocked.player] ?? 'Outro jogador'} apertou primeiro` : 'Aperte para responder'}</small></button> : <p className="waiting-round">Aguardando a música…</p>}{guestResult?.type === 'result' && <div className={`guest-feedback ${guestResult.kind}`}>{guestResult.kind === 'song' ? `Música certa! +${guestResult.points}` : guestResult.kind === 'artist' ? `Artista certo! +${guestResult.points}` : 'Resposta incorreta'}{guestResult.song && <small>{guestResult.song} · {guestResult.artist}</small>}</div>}</>}</main>}
 
